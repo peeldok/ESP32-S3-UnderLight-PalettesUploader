@@ -2,124 +2,146 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>MIDI Palette Uploader (Stable)</title>
+    <title>MIDI Palette Uploader (Stable v3 - Fixed)</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
-        .container { max-width: 600px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); }
-        h2 { color: #1a73e8; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        select, input, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 5px; border: 1px solid #ddd; box-sizing: border-box; }
-        button { background: #1a73e8; color: white; font-weight: bold; border: none; cursor: pointer; }
-        button:disabled { background: #ccc; }
-        .log { margin-top: 20px; background: #222; color: #0f0; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; font-family: monospace; font-size: 12px; }
-        .dot-container { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 10px; }
-        .dot { aspect-ratio: 1; background: #000; border: 1px solid #333; }
+        body { font-family: 'Segoe UI', sans-serif; padding: 30px; background: #f0f2f5; color: #333; }
+        .container { max-width: 650px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #1a73e8; border-bottom: 2px solid #e8f0fe; padding-bottom: 10px; }
+        label { display: block; font-weight: bold; margin-top: 15px; margin-bottom: 5px; font-size: 0.9em; }
+        select, input, button { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
+        button { background: #1a73e8; color: white; font-weight: bold; border: none; margin-top: 20px; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #1557b0; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .log { margin-top: 20px; background: #222; color: #0f0; padding: 15px; border-radius: 8px; height: 180px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 13px; }
+        .grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; margin-top: 10px; border: 1px solid #ddd; padding: 5px; background: #fafafa; }
+        .dot { aspect-ratio: 1; background: #000; border-radius: 2px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>🎨 MIDI Palette Uploader</h2>
+    <h2>🎨 MIDI Palette Uploader (Fixed)</h2>
     
-    <label>1. MIDI 출력 장치 선택</label>
-    <select id="midi-select"><option>장치를 찾는 중...</option></select>
+    <label>1. MIDI 출력 장치 선택 (ESP32-S3)</label>
+    <select id="midi-out-select"><option>장치 검색 중...</option></select>
     
-    <label style="display:block; margin-top:15px;">2. 대상 채널 선택</label>
-    <select id="target-idx">
-        <option value="0">DAW CH 4 (Index 0)</option>
-        <option value="1">DAW CH 5 (Index 1)</option>
-        <option value="2">DAW CH 6 (Index 2)</option>
+    <label>2. 업로드 대상 채널 (ESP32 팔레트 인덱스)</label>
+    <select id="target-ch">
+        <option value="0">User Palette 1 (CH 4)</option>
+        <option value="1">User Palette 2 (CH 5)</option>
+        <option value="2">User Palette 3 (CH 6)</option>
     </select>
 
-    <label style="display:block; margin-top:15px;">3. 팔레트 파일 로드 (.txt)</label>
+    <label>3. 팔레트 파일 선택 (.txt)</label>
     <input type="file" id="file-input" accept=".txt">
     
-    <div id="dot-grid" class="dot-container"></div>
+    <label>미리보기 (128색)</label>
+    <div id="preview-grid" class="grid"></div>
 
-    <button id="send-btn" disabled style="margin-top:20px;">ESP32로 데이터 전송</button>
+    <button id="upload-btn" disabled>ESP32로 팔레트 전송 시작</button>
     
-    <div id="log-box" class="log">로그 대기 중...</div>
+    <div id="log" class="log">대기 중...</div>
 </div>
 
 <script>
-    let midiOut = null;
-    let palette = { r: new Array(128).fill(0), g: new Array(128).fill(0), b: new Array(128).fill(0) };
-    const logBox = document.getElementById('log-box');
+    let midiOutput = null;
+    let paletteData = { r: new Array(128).fill(0), g: new Array(128).fill(0), b: new Array(128).fill(0) };
+    const logEl = document.getElementById('log');
 
-    function log(msg) {
+    function addLog(msg) {
         const div = document.createElement('div');
         div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        logBox.appendChild(div);
-        logBox.scrollTop = logBox.scrollHeight;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // 1. MIDI 시스템 시작 (Sysex 권한 필수 요청)
     if (navigator.requestMIDIAccess) {
         navigator.requestMIDIAccess({ sysex: true }).then(access => {
             const updateDevices = () => {
                 const outputs = Array.from(access.outputs.values());
-                const select = document.getElementById('midi-select');
+                const select = document.getElementById('midi-out-select');
                 select.innerHTML = '';
+                if (outputs.length === 0) {
+                    select.innerHTML = '<option>장치 없음</option>';
+                    return;
+                }
                 outputs.forEach(out => {
                     const opt = document.createElement('option');
                     opt.value = out.id;
                     opt.text = out.name;
                     select.appendChild(opt);
                 });
-                midiOut = outputs[0];
-                document.getElementById('send-btn').disabled = !midiOut;
-                if(midiOut) log(`장치 연결됨: ${midiOut.name}`);
+                midiOutput = outputs[0];
+                document.getElementById('upload-btn').disabled = false;
+                addLog(`장치 연결됨: ${midiOutput.name}`);
             };
             access.onstatechange = updateDevices;
             updateDevices();
-        }, () => alert("MIDI 접근 거부됨. HTTPS 환경인지 확인하세요."));
+        }, () => addLog("❌ MIDI 접근이 거부되었습니다."));
     }
 
-    // 2. 파일 파싱 (4배 보정 포함)
+    // 파일 읽기 로직 수정 (다중 데이터 및 6비트 보정 완벽 대응)
     document.getElementById('file-input').onchange = (e) => {
+        const file = e.target.files[0];
         const reader = new FileReader();
         reader.onload = () => {
-            const lines = reader.result.split('\n');
-            const grid = document.getElementById('dot-grid');
+            const content = reader.result;
+            const grid = document.getElementById('preview-grid');
             grid.innerHTML = '';
-            lines.forEach(line => {
-                const m = line.match(/(\d+),\s*(\d+)\s+(\d+)\s+(\d+);/);
-                if(m) {
-                    const v = parseInt(m[1]);
-                    palette.r[v] = Math.min(parseInt(m[2]) * 4, 255);
-                    palette.g[v] = Math.min(parseInt(m[3]) * 4, 255);
-                    palette.b[v] = Math.min(parseInt(m[4]) * 4, 255);
+            
+            // 모든 데이터를 초기화 (새 파일 로드 시 덮어쓰기 위해)
+            paletteData.r.fill(0); paletteData.g.fill(0); paletteData.b.fill(0);
+
+            // 정규식 수정: 전역 검색(g)을 통해 한 줄 내의 모든 패턴을 찾아냄
+            const regex = /(\d+),\s*(\d+)\s+(\d+)\s+(\d+)/g;
+            let match;
+            let count = 0;
+
+            while ((match = regex.exec(content)) !== null) {
+                const v = parseInt(match[1]); // 인덱스 (0-127)
+                if (v < 128) {
+                    // 6비트(0-63) 데이터인지 확인 후 4배 보정
+                    let r = parseInt(match[2]);
+                    let g = parseInt(match[3]);
+                    let b = parseInt(match[4]);
+
+                    // 만약 파일의 모든 값이 63 이하라면 4배 증폭 적용
+                    paletteData.r[v] = Math.min(r * 4, 255);
+                    paletteData.g[v] = Math.min(g * 4, 255);
+                    paletteData.b[v] = Math.min(b * 4, 255);
+                    count++;
                 }
-            });
-            for(let i=0; i<128; i++) {
-                const d = document.createElement('div');
-                d.className = 'dot';
-                d.style.backgroundColor = `rgb(${palette.r[i]},${palette.g[i]},${palette.b[i]})`;
-                grid.appendChild(d);
             }
-            log("파일 파싱 완료 (4배 밝기 보정 적용)");
+
+            // 그리드 재생성
+            for (let i = 0; i < 128; i++) {
+                const dot = document.createElement('div');
+                dot.className = 'dot';
+                dot.style.backgroundColor = `rgb(${paletteData.r[i]},${paletteData.g[i]},${paletteData.b[i]})`;
+                grid.appendChild(dot);
+            }
+            addLog(`총 ${count}개의 색상을 읽어왔습니다 (보정 완료).`);
         };
-        reader.readAsText(e.target.files[0]);
+        reader.readAsText(file);
     };
 
-    // 3. 전송 함수
-    document.getElementById('send-btn').onclick = async () => {
-        if(!midiOut) return;
-        const target = parseInt(document.getElementById('target-idx').value);
-        log(`전송 시작: Index ${target}...`);
-        
-        for(let type = 0; type < 3; type++) {
-            const data = type === 0 ? palette.r : (type === 1 ? palette.g : palette.b);
-            let enc = [];
-            for(let i=0; i<128; i++) {
-                enc.push((data[i] >> 7) & 0x01);
-                enc.push(data[i] & 0x7F);
+    document.getElementById('upload-btn').onclick = async () => {
+        if (!midiOutput) return;
+        const targetIdx = parseInt(document.getElementById('target-ch').value);
+        addLog(`전송 시작... (대상 인덱스: ${targetIdx})`);
+
+        for (let type = 0; type < 3; type++) {
+            const currentData = type === 0 ? paletteData.r : (type === 1 ? paletteData.g : paletteData.b);
+            let payload = [];
+            for (let i = 0; i < 128; i++) {
+                payload.push((currentData[i] >> 7) & 0x01); // 7비트 상위
+                payload.push(currentData[i] & 0x7F);        // 7비트 하위
             }
-            // 전송
-            midiOut.send([0xF0, 0x7D, target, type, ...enc, 0xF7]);
-            log(`${type === 0 ? 'R' : type === 1 ? 'G' : 'B'} 전송 완료`);
-            await new Promise(r => setTimeout(r, 300)); // ESP32 처리 시간 확보
+            midiOutput.send([0xF0, 0x7D, targetIdx, type, ...payload, 0xF7]);
+            addLog(`${type === 0 ? 'RED' : type === 1 ? 'GREEN' : 'BLUE'} 데이터 전송됨`);
+            await new Promise(r => setTimeout(r, 400));
         }
-        log("✅ 모든 데이터 전송 완료!");
+        addLog("✅ 모든 팔레트 전송 및 덮어쓰기 완료!");
     };
 </script>
 </body>

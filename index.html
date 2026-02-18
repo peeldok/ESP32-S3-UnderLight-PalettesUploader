@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>MIDI Palette Uploader (Stable)</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); }
+        h2 { color: #1a73e8; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        select, input, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 5px; border: 1px solid #ddd; box-sizing: border-box; }
+        button { background: #1a73e8; color: white; font-weight: bold; border: none; cursor: pointer; }
+        button:disabled { background: #ccc; }
+        .log { margin-top: 20px; background: #222; color: #0f0; padding: 10px; border-radius: 5px; height: 150px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .dot-container { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 10px; }
+        .dot { aspect-ratio: 1; background: #000; border: 1px solid #333; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🎨 MIDI Palette Uploader</h2>
+    
+    <label>1. MIDI 출력 장치 선택</label>
+    <select id="midi-select"><option>장치를 찾는 중...</option></select>
+    
+    <label style="display:block; margin-top:15px;">2. 대상 채널 선택</label>
+    <select id="target-idx">
+        <option value="0">DAW CH 4 (Index 0)</option>
+        <option value="1">DAW CH 5 (Index 1)</option>
+        <option value="2">DAW CH 6 (Index 2)</option>
+    </select>
+
+    <label style="display:block; margin-top:15px;">3. 팔레트 파일 로드 (.txt)</label>
+    <input type="file" id="file-input" accept=".txt">
+    
+    <div id="dot-grid" class="dot-container"></div>
+
+    <button id="send-btn" disabled style="margin-top:20px;">ESP32로 데이터 전송</button>
+    
+    <div id="log-box" class="log">로그 대기 중...</div>
+</div>
+
+<script>
+    let midiOut = null;
+    let palette = { r: new Array(128).fill(0), g: new Array(128).fill(0), b: new Array(128).fill(0) };
+    const logBox = document.getElementById('log-box');
+
+    function log(msg) {
+        const div = document.createElement('div');
+        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        logBox.appendChild(div);
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // 1. MIDI 시스템 시작 (Sysex 권한 필수 요청)
+    if (navigator.requestMIDIAccess) {
+        navigator.requestMIDIAccess({ sysex: true }).then(access => {
+            const updateDevices = () => {
+                const outputs = Array.from(access.outputs.values());
+                const select = document.getElementById('midi-select');
+                select.innerHTML = '';
+                outputs.forEach(out => {
+                    const opt = document.createElement('option');
+                    opt.value = out.id;
+                    opt.text = out.name;
+                    select.appendChild(opt);
+                });
+                midiOut = outputs[0];
+                document.getElementById('send-btn').disabled = !midiOut;
+                if(midiOut) log(`장치 연결됨: ${midiOut.name}`);
+            };
+            access.onstatechange = updateDevices;
+            updateDevices();
+        }, () => alert("MIDI 접근 거부됨. HTTPS 환경인지 확인하세요."));
+    }
+
+    // 2. 파일 파싱 (4배 보정 포함)
+    document.getElementById('file-input').onchange = (e) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const lines = reader.result.split('\n');
+            const grid = document.getElementById('dot-grid');
+            grid.innerHTML = '';
+            lines.forEach(line => {
+                const m = line.match(/(\d+),\s*(\d+)\s+(\d+)\s+(\d+);/);
+                if(m) {
+                    const v = parseInt(m[1]);
+                    palette.r[v] = Math.min(parseInt(m[2]) * 4, 255);
+                    palette.g[v] = Math.min(parseInt(m[3]) * 4, 255);
+                    palette.b[v] = Math.min(parseInt(m[4]) * 4, 255);
+                }
+            });
+            for(let i=0; i<128; i++) {
+                const d = document.createElement('div');
+                d.className = 'dot';
+                d.style.backgroundColor = `rgb(${palette.r[i]},${palette.g[i]},${palette.b[i]})`;
+                grid.appendChild(d);
+            }
+            log("파일 파싱 완료 (4배 밝기 보정 적용)");
+        };
+        reader.readAsText(e.target.files[0]);
+    };
+
+    // 3. 전송 함수
+    document.getElementById('send-btn').onclick = async () => {
+        if(!midiOut) return;
+        const target = parseInt(document.getElementById('target-idx').value);
+        log(`전송 시작: Index ${target}...`);
+        
+        for(let type = 0; type < 3; type++) {
+            const data = type === 0 ? palette.r : (type === 1 ? palette.g : palette.b);
+            let enc = [];
+            for(let i=0; i<128; i++) {
+                enc.push((data[i] >> 7) & 0x01);
+                enc.push(data[i] & 0x7F);
+            }
+            // 전송
+            midiOut.send([0xF0, 0x7D, target, type, ...enc, 0xF7]);
+            log(`${type === 0 ? 'R' : type === 1 ? 'G' : 'B'} 전송 완료`);
+            await new Promise(r => setTimeout(r, 300)); // ESP32 처리 시간 확보
+        }
+        log("✅ 모든 데이터 전송 완료!");
+    };
+</script>
+</body>
+</html>

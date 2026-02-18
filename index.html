@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>MIDI Palette Uploader (Stable v3 - Fixed)</title>
+    <title>MIDI Palette Uploader (Stable v4)</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; padding: 30px; background: #f0f2f5; color: #333; }
         .container { max-width: 650px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
@@ -13,19 +13,19 @@
         button:hover { background: #1557b0; }
         button:disabled { background: #ccc; cursor: not-allowed; }
         .log { margin-top: 20px; background: #222; color: #0f0; padding: 15px; border-radius: 8px; height: 180px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 13px; }
-        .grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; margin-top: 10px; border: 1px solid #ddd; padding: 5px; background: #fafafa; }
-        .dot { aspect-ratio: 1; background: #000; border-radius: 2px; }
+        .grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 10px; background: #ddd; border: 1px solid #ccc; }
+        .dot { aspect-ratio: 1; background: #000; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>🎨 MIDI Palette Uploader (Fixed)</h2>
+    <h2>🎨 MIDI Palette Uploader (v4)</h2>
     
-    <label>1. MIDI 출력 장치 선택 (ESP32-S3)</label>
+    <label>1. MIDI 출력 장치 선택</label>
     <select id="midi-out-select"><option>장치 검색 중...</option></select>
     
-    <label>2. 업로드 대상 채널 (ESP32 팔레트 인덱스)</label>
+    <label>2. 업로드 대상 (사용자 팔레트)</label>
     <select id="target-ch">
         <option value="0">User Palette 1 (CH 4)</option>
         <option value="1">User Palette 2 (CH 5)</option>
@@ -35,12 +35,11 @@
     <label>3. 팔레트 파일 선택 (.txt)</label>
     <input type="file" id="file-input" accept=".txt">
     
-    <label>미리보기 (128색)</label>
     <div id="preview-grid" class="grid"></div>
 
     <button id="upload-btn" disabled>ESP32로 팔레트 전송 시작</button>
     
-    <div id="log" class="log">대기 중...</div>
+    <div id="log" class="log">파일을 선택해 주세요...</div>
 </div>
 
 <script>
@@ -55,6 +54,7 @@
         logEl.scrollTop = logEl.scrollHeight;
     }
 
+    // MIDI 설정
     if (navigator.requestMIDIAccess) {
         navigator.requestMIDIAccess({ sysex: true }).then(access => {
             const updateDevices = () => {
@@ -67,81 +67,84 @@
                 }
                 outputs.forEach(out => {
                     const opt = document.createElement('option');
-                    opt.value = out.id;
-                    opt.text = out.name;
+                    opt.value = out.id; opt.text = out.name;
                     select.appendChild(opt);
                 });
                 midiOutput = outputs[0];
                 document.getElementById('upload-btn').disabled = false;
-                addLog(`장치 연결됨: ${midiOutput.name}`);
+                addLog(`장치 준비 완료: ${midiOutput.name}`);
             };
             access.onstatechange = updateDevices;
             updateDevices();
-        }, () => addLog("❌ MIDI 접근이 거부되었습니다."));
+        }, () => addLog("❌ MIDI 접근 실패 (HTTPS 확인)"));
     }
 
-    // 파일 읽기 로직 수정 (다중 데이터 및 6비트 보정 완벽 대응)
+    // 파일 읽기 로직 (핵심 수정)
     document.getElementById('file-input').onchange = (e) => {
         const file = e.target.files[0];
+        if (!file) return;
+
         const reader = new FileReader();
         reader.onload = () => {
-            const content = reader.result;
+            const rawText = reader.result;
             const grid = document.getElementById('preview-grid');
             grid.innerHTML = '';
             
-            // 모든 데이터를 초기화 (새 파일 로드 시 덮어쓰기 위해)
+            // 데이터 초기화
             paletteData.r.fill(0); paletteData.g.fill(0); paletteData.b.fill(0);
 
-            // 정규식 수정: 전역 검색(g)을 통해 한 줄 내의 모든 패턴을 찾아냄
-            const regex = /(\d+),\s*(\d+)\s+(\d+)\s+(\d+)/g;
+            // [수정] 정규식을 더 유연하게: 인덱스 뒤에 콤마가 있고, 그 뒤에 공백으로 구분된 숫자 3개를 찾음
+            // 예: "72, 63 0 0;" 또는 "72, 63 0 0 \n" 모두 대응
+            const regex = /(\d+),\s+(\d+)\s+(\d+)\s+(\d+)/g;
             let match;
-            let count = 0;
+            let foundCount = 0;
 
-            while ((match = regex.exec(content)) !== null) {
-                const v = parseInt(match[1]); // 인덱스 (0-127)
-                if (v < 128) {
-                    // 6비트(0-63) 데이터인지 확인 후 4배 보정
-                    let r = parseInt(match[2]);
-                    let g = parseInt(match[3]);
-                    let b = parseInt(match[4]);
-
-                    // 만약 파일의 모든 값이 63 이하라면 4배 증폭 적용
-                    paletteData.r[v] = Math.min(r * 4, 255);
-                    paletteData.g[v] = Math.min(g * 4, 255);
-                    paletteData.b[v] = Math.min(b * 4, 255);
-                    count++;
+            while ((match = regex.exec(rawText)) !== null) {
+                const idx = parseInt(match[1]);
+                if (idx < 128) {
+                    // Novation 규격(0-63) 대응 4배 보정
+                    paletteData.r[idx] = Math.min(parseInt(match[2]) * 4, 255);
+                    paletteData.g[idx] = Math.min(parseInt(match[3]) * 4, 255);
+                    paletteData.b[idx] = Math.min(parseInt(match[4]) * 4, 255);
+                    foundCount++;
                 }
             }
 
-            // 그리드 재생성
+            // 그리드 업데이트
             for (let i = 0; i < 128; i++) {
                 const dot = document.createElement('div');
                 dot.className = 'dot';
                 dot.style.backgroundColor = `rgb(${paletteData.r[i]},${paletteData.g[i]},${paletteData.b[i]})`;
                 grid.appendChild(dot);
             }
-            addLog(`총 ${count}개의 색상을 읽어왔습니다 (보정 완료).`);
+
+            if (foundCount > 0) {
+                addLog(`✅ 성공: ${foundCount}개의 색상 데이터를 읽었습니다.`);
+            } else {
+                addLog(`❌ 오류: 파일 형식이 맞지 않습니다. (데이터 0개)`);
+            }
         };
         reader.readAsText(file);
     };
 
+    // 전송 로직
     document.getElementById('upload-btn').onclick = async () => {
         if (!midiOutput) return;
-        const targetIdx = parseInt(document.getElementById('target-ch').value);
-        addLog(`전송 시작... (대상 인덱스: ${targetIdx})`);
+        const targetIdx = document.getElementById('target-ch').value;
+        addLog(`🚀 전송 시작... (대상: User Palette ${parseInt(targetIdx)+1})`);
 
         for (let type = 0; type < 3; type++) {
-            const currentData = type === 0 ? paletteData.r : (type === 1 ? paletteData.g : paletteData.b);
+            const data = type === 0 ? paletteData.r : (type === 1 ? paletteData.g : paletteData.b);
             let payload = [];
             for (let i = 0; i < 128; i++) {
-                payload.push((currentData[i] >> 7) & 0x01); // 7비트 상위
-                payload.push(currentData[i] & 0x7F);        // 7비트 하위
+                payload.push((data[i] >> 7) & 0x01); // MSB
+                payload.push(data[i] & 0x7F);        // LSB
             }
-            midiOutput.send([0xF0, 0x7D, targetIdx, type, ...payload, 0xF7]);
-            addLog(`${type === 0 ? 'RED' : type === 1 ? 'GREEN' : 'BLUE'} 데이터 전송됨`);
-            await new Promise(r => setTimeout(r, 400));
+            midiOutput.send([0xF0, 0x7D, parseInt(targetIdx), type, ...payload, 0xF7]);
+            addLog(`${type === 0 ? '빨강' : type === 1 ? '초록' : '파랑'} 완료`);
+            await new Promise(r => setTimeout(r, 300));
         }
-        addLog("✅ 모든 팔레트 전송 및 덮어쓰기 완료!");
+        addLog("✨ 전송이 모두 완료되었습니다!");
     };
 </script>
 </body>

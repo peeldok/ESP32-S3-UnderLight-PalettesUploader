@@ -15,7 +15,7 @@
         .brightness-ctrl { display: flex; gap: 10px; align-items: center; margin-top: 5px; }
         #bright-range { flex: 1; cursor: pointer; }
         #bright-val { width: 40px; font-weight: bold; text-align: center; color: #1a73e8; }
-        .btn-small { width: 100px; padding: 10px; margin-top: 0; background: #34a853; }
+        .btn-small { width: 100px; padding: 10px; margin-top: 0; background: #34a853; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;}
         .btn-small:hover { background: #2d9249; }
 
         .file-upload-wrapper { position: relative; width: 100%; }
@@ -27,12 +27,12 @@
         }
         .custom-file-upload:hover { background: #f8f9fa; border-color: #1a73e8; color: #1a73e8; }
         
-        button { background: #1a73e8; color: white; font-weight: bold; border: none; padding: 12px; border-radius: 8px; margin-top: 20px; cursor: pointer; transition: 0.2s; font-size: 1rem; }
-        button:hover { background: #1557b0; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
+        button#upload-btn { background: #1a73e8; color: white; font-weight: bold; border: none; padding: 12px; border-radius: 8px; margin-top: 20px; cursor: pointer; transition: 0.2s; font-size: 1rem; }
+        button#upload-btn:hover { background: #1557b0; }
+        button#upload-btn:disabled { background: #ccc; cursor: not-allowed; }
         
-        .grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 15px; background: #ddd; border: 1px solid #ccc; }
-        .dot { aspect-ratio: 1; background: #000; }
+        .grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 15px; background: #ddd; border: 1px solid #ccc; padding: 2px;}
+        .dot { aspect-ratio: 1; background: #000; border-radius: 2px; }
     </style>
 </head>
 <body>
@@ -60,7 +60,7 @@
     <label>4. Select Palette File</label>
     <div class="file-upload-wrapper">
         <label for="file-input" class="custom-file-upload" id="file-label">Click to choose a file...</label>
-        <input type="file" id="file-input">
+        <input type="file" id="file-input" accept=".txt">
     </div>
     
     <div id="preview-grid" class="grid"></div>
@@ -83,11 +83,13 @@
                     select.innerHTML = '<option>No devices found</option>';
                     return;
                 }
-                outputs.forEach(out => {
+                outputs.forEach((out, index) => {
                     const opt = document.createElement('option');
-                    opt.value = out.id; opt.text = out.name;
+                    opt.value = out.id; 
+                    opt.text = out.name;
                     select.appendChild(opt);
                 });
+                // 기본 선택 설정 (목록의 첫 번째)
                 midiOutput = outputs[0];
                 document.getElementById('upload-btn').disabled = false;
             };
@@ -96,7 +98,11 @@
             
             document.getElementById('midi-out-select').onchange = (e) => {
                 midiOutput = access.outputs.get(e.target.value);
+                console.log("Selected MIDI Output:", midiOutput.name);
             };
+        }).catch(err => {
+            console.error("MIDI Access Denied:", err);
+            alert("브라우저에서 MIDI 권한을 허용해야 합니다.");
         });
     }
 
@@ -106,11 +112,19 @@
     brightRange.oninput = () => brightVal.textContent = brightRange.value;
 
     document.getElementById('apply-bright-btn').onclick = () => {
-        if (!midiOutput) return;
+        if (!midiOutput) return alert("MIDI 장치를 먼저 선택하세요.");
         const val = parseInt(brightRange.value);
-        // SysEx Protocol: [Start, ID(0x7D), Cmd(0x0F), Sub(0x00), Value, End]
-        midiOutput.send([0xF0, 0x7D, 0x0F, 0x00, val, 0xF7]);
-        console.log("Sent Brightness:", val);
+        
+        // 📌 [수정됨] SysEx 규격 위반(127 초과)을 방지하기 위해 2바이트로 분할 전송
+        const msb = (val >> 7) & 0x01;
+        const lsb = val & 0x7F;
+        
+        try {
+            midiOutput.send([0xF0, 0x7D, 0x0F, 0x00, msb, lsb, 0xF7]);
+            console.log("Sent Brightness:", val);
+        } catch(err) {
+            console.error("Failed to send brightness:", err);
+        }
     };
 
     // File Loading Logic
@@ -126,16 +140,24 @@
             grid.innerHTML = '';
             paletteData.r.fill(0); paletteData.g.fill(0); paletteData.b.fill(0);
 
+            // 정규식: "숫자, 숫자 숫자 숫자" 포맷을 찾음
             const regex = /(\d+),\s+(\d+)\s+(\d+)\s+(\d+)/g;
             let match;
+            let foundCount = 0;
             while ((match = regex.exec(rawText)) !== null) {
                 const idx = parseInt(match[1]);
                 if (idx < 128) {
                     paletteData.r[idx] = Math.min(parseInt(match[2]) * 4, 255);
                     paletteData.g[idx] = Math.min(parseInt(match[3]) * 4, 255);
                     paletteData.b[idx] = Math.min(parseInt(match[4]) * 4, 255);
+                    foundCount++;
                 }
             }
+            
+            if(foundCount === 0) {
+                alert("파일에서 유효한 색상 데이터를 찾지 못했습니다.\n형식(예: 0, 255 128 0)을 확인해주세요.");
+            }
+
             for (let i = 0; i < 128; i++) {
                 const dot = document.createElement('div');
                 dot.className = 'dot';
@@ -148,28 +170,37 @@
 
     // Palette Upload Logic
     document.getElementById('upload-btn').onclick = async () => {
-        if (!midiOutput) return;
+        if (!midiOutput) return alert("MIDI 장치를 선택하세요.");
         const btn = document.getElementById('upload-btn');
         const originalText = btn.textContent;
-        const targetIdx = document.getElementById('target-ch').value;
+        const targetIdx = parseInt(document.getElementById('target-ch').value);
 
         btn.disabled = true;
         btn.textContent = "Uploading Palette...";
 
-        for (let type = 0; type < 3; type++) {
-            const data = type === 0 ? paletteData.r : (type === 1 ? paletteData.g : paletteData.b);
-            let payload = [];
-            for (let i = 0; i < 128; i++) {
-                payload.push((data[i] >> 7) & 0x01);
-                payload.push(data[i] & 0x7F);
+        try {
+            for (let type = 0; type < 3; type++) {
+                const data = type === 0 ? paletteData.r : (type === 1 ? paletteData.g : paletteData.b);
+                let payload = [];
+                for (let i = 0; i < 128; i++) {
+                    payload.push((data[i] >> 7) & 0x01);
+                    payload.push(data[i] & 0x7F);
+                }
+                midiOutput.send([0xF0, 0x7D, targetIdx, type, ...payload, 0xF7]);
+                
+                // 장치가 처리할 시간을 줍니다.
+                await new Promise(r => setTimeout(r, 100));
             }
-            midiOutput.send([0xF0, 0x7D, parseInt(targetIdx), type, ...payload, 0xF7]);
-            await new Promise(r => setTimeout(r, 300));
+            btn.textContent = "Upload Complete!";
+        } catch(err) {
+            console.error("Upload failed:", err);
+            btn.textContent = "Upload Failed (Check Console)";
         }
 
-        btn.disabled = false;
-        btn.textContent = "Upload Complete!";
-        setTimeout(() => { btn.textContent = originalText; }, 2000);
+        setTimeout(() => { 
+            btn.disabled = false;
+            btn.textContent = originalText; 
+        }, 2000);
     };
 </script>
 </body>
